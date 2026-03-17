@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+monitor_state.json
+btc_absdd_dashboard.png
+.venv/
+env/
+venv/
