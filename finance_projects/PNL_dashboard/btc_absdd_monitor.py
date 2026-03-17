@@ -12,7 +12,7 @@ import requests
 class Settings:
     # Market data
     symbol: str = os.getenv("SYMBOL", "BTCUSDT")
-    category: str = os.getenv("CATEGORY", "spot")          # spot ,  linear , inverse
+    category: str = os.getenv("CATEGORY", "spot")          # spot | linear | inverse
     interval: str = os.getenv("INTERVAL", "60")            # 1,3,5,15,30,60,120,240,360,720,D,W,M
     bars: int = int(os.getenv("BARS", "1500"))
     request_timeout: int = int(os.getenv("REQUEST_TIMEOUT", "20"))
@@ -50,7 +50,7 @@ class Settings:
     vol_period: int = int(os.getenv("VOL_PERIOD", "14"))
     vol_floor_pct: float = float(os.getenv("VOL_FLOOR_PCT", "0.0001"))
 
-BYBIT_KLINE_URL = "https://api.bybit.com/v5/market/kline"
+BINANCE_KLINE_URL = "https://api.binance.com/api/v3/klines"
 
 def interval_to_ms(interval: str) -> int:
     mapping = {
@@ -73,38 +73,33 @@ def interval_to_ms(interval: str) -> int:
     return mapping[interval]
 
 
-def fetch_bybit_klines(symbol: str, category: str, interval: str, bars: int, timeout: int) -> pd.DataFrame:
+def fetch_binance_klines(symbol: str, interval: str, bars: int, timeout: int) -> pd.DataFrame:
     session = requests.Session()
     all_rows = []
-    end: Optional[int] = None
+    end_time: Optional[int] = None
 
     while len(all_rows) < bars:
         limit = min(1000, bars - len(all_rows))
         params = {
-            "category": category,
             "symbol": symbol,
             "interval": interval,
             "limit": limit,
         }
-        if end is not None:
-            params["end"] = end
+        if end_time is not None:
+            params["endTime"] = end_time
 
-        r = session.get(BYBIT_KLINE_URL, params=params, timeout=timeout)
+        r = session.get(BINANCE_KLINE_URL, params=params, timeout=timeout)
         r.raise_for_status()
-        payload = r.json()
+        rows = r.json()
 
-        if payload.get("retCode") != 0:
-            raise RuntimeError(f"Bybit error: {payload}")
-
-        rows = payload["result"]["list"]
         if not rows:
             break
 
-        all_rows.extend(rows)
+        # Binance returns oldest -> newest, so prepend older batches manually
+        all_rows = rows + all_rows
 
-        # Bybit returns reverse chronological order
-        oldest_start = int(rows[-1][0])
-        end = oldest_start - 1
+        oldest_open_time = int(rows[0][0])
+        end_time = oldest_open_time - 1
 
         if len(rows) < limit:
             break
@@ -112,28 +107,32 @@ def fetch_bybit_klines(symbol: str, category: str, interval: str, bars: int, tim
         time.sleep(0.12)
 
     if not all_rows:
-        raise RuntimeError("No kline data returned from Bybit.")
+        raise RuntimeError("No kline data returned from Binance.")
 
     df = pd.DataFrame(
         all_rows,
         columns=[
-            "start_time",
+            "open_time",
             "open",
             "high",
             "low",
             "close",
             "volume",
-            "turnover",
+            "close_time",
+            "quote_asset_volume",
+            "num_trades",
+            "taker_buy_base",
+            "taker_buy_quote",
+            "ignore",
         ],
     )
 
-    for col in ["open", "high", "low", "close", "volume", "turnover"]:
+    for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["start_time"] = pd.to_datetime(pd.to_numeric(df["start_time"]), unit="ms", utc=True)
+    df["start_time"] = pd.to_datetime(pd.to_numeric(df["open_time"]), unit="ms", utc=True)
     df = df.sort_values("start_time").drop_duplicates("start_time").reset_index(drop=True)
 
-    # Keep only closed candles
     candle_ms = interval_to_ms(interval)
     now_ms = int(pd.Timestamp.utcnow().timestamp() * 1000)
     start_ms = (df["start_time"].astype("int64") // 10**6).astype(np.int64)
@@ -142,7 +141,7 @@ def fetch_bybit_klines(symbol: str, category: str, interval: str, bars: int, tim
     if df.empty:
         raise RuntimeError("All candles appear unclosed after filtering.")
 
-    return df
+    return df[["start_time", "open", "high", "low", "close", "volume"]]
 
 def build_signal_ema(df: pd.DataFrame, fast: int, slow: int) -> pd.DataFrame:
     out = df.copy()
@@ -509,9 +508,8 @@ def should_send_alert(df: pd.DataFrame, state: dict) -> bool:
 def main() -> None:
     cfg = Settings()
 
-    df = fetch_bybit_klines(
+    df = fetch_binance_klines(
         symbol=cfg.symbol,
-        category=cfg.category,
         interval=cfg.interval,
         bars=cfg.bars,
         timeout=cfg.request_timeout,
