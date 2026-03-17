@@ -1,0 +1,77 @@
+name: BTC AbsDD Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"   
+
+concurrency:
+  group: btc-absdd-monitor
+  cancel-in-progress: true
+
+jobs:
+  run-monitor:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: finance_projects/PNL_dashboard
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run BTC monitor
+        env:
+          SYMBOL: BTCUSDT
+          CATEGORY: spot
+          INTERVAL: 60
+          BARS: 2500
+          REQUEST_TIMEOUT: 20
+
+          EMA_FAST: 20
+          EMA_SLOW: 50
+
+          Z_LOOKBACK: 150
+          Z_K1: 0.5
+          Z_K2: 1.0
+
+          DASHBOARD_BARS: 220
+          SAVE_DASHBOARD: 1
+          SHOW_DASHBOARD: 0
+          DASHBOARD_PATH: btc_absdd_dashboard.png
+
+          EXEC_MODE: Close
+          IGNORE_NEUTRAL: 1
+
+          PNL_MODE: Raw
+          VOL_METRIC: ATR%
+          VOL_PERIOD: 14
+          VOL_FLOOR_PCT: 0.0001
+
+          TELEGRAM_ENABLED: 1
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          STATE_PATH: monitor_state.json
+        run: python btc_absdd_monitor.py
+
+      - name: Upload dashboard artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: btc-dashboard
+          path: |
+            finance_projects/PNL_dashboard/btc_absdd_dashboard.png
+            finance_projects/PNL_dashboard/monitor_state.json
+          if-no-files-found: ignore
