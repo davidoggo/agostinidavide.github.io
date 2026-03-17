@@ -3,7 +3,7 @@ name: BTC AbsDD Monitor
 on:
   workflow_dispatch:
   schedule:
-    - cron: "7 * * * *"
+    - cron: "*/10 * * * *"
 
 concurrency:
   group: btc-absdd-monitor
