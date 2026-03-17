@@ -13,7 +13,7 @@ class Settings:
     # Market data
     symbol: str = os.getenv("SYMBOL", "BTCUSDT")
     category: str = os.getenv("CATEGORY", "spot")          # spot | linear | inverse
-    interval: str = os.getenv("INTERVAL", "60")            # 1,3,5,15,30,60,120,240,360,720,D,W,M
+    interval: str = os.getenv("INTERVAL", "1h")            # 1m,3m,5m,15m,30m,1h,2h,4h,6h,12h,1d,1w,1M
     bars: int = int(os.getenv("BARS", "1500"))
     request_timeout: int = int(os.getenv("REQUEST_TIMEOUT", "20"))
 
@@ -50,23 +50,23 @@ class Settings:
     vol_period: int = int(os.getenv("VOL_PERIOD", "14"))
     vol_floor_pct: float = float(os.getenv("VOL_FLOOR_PCT", "0.0001"))
 
-BINANCE_KLINE_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_KLINE_URL = "https://data-api.binance.vision/api/v3/klines"
 
 def interval_to_ms(interval: str) -> int:
     mapping = {
-        "1": 60_000,
-        "3": 3 * 60_000,
-        "5": 5 * 60_000,
-        "15": 15 * 60_000,
-        "30": 30 * 60_000,
-        "60": 60 * 60_000,
-        "120": 120 * 60_000,
-        "240": 240 * 60_000,
-        "360": 360 * 60_000,
-        "720": 720 * 60_000,
-        "D": 24 * 60 * 60_000,
-        "W": 7 * 24 * 60 * 60_000,
-        "M": 30 * 24 * 60 * 60_000,  # pragmatic approximation
+        "1m": 60_000,
+        "3m": 3 * 60_000,
+        "5m": 5 * 60_000,
+        "15m": 15 * 60_000,
+        "30m": 30 * 60_000,
+        "1h": 60 * 60_000,
+        "2h": 120 * 60_000,
+        "4h": 240 * 60_000,
+        "6h": 360 * 60_000,
+        "12h": 720 * 60_000,
+        "1d": 24 * 60 * 60_000,
+        "1w": 7 * 24 * 60 * 60_000,
+        "1M": 30 * 24 * 60 * 60_000,
     }
     if interval not in mapping:
         raise ValueError(f"Unsupported interval: {interval}")
