@@ -177,15 +177,15 @@ def compute_pnl_analytics(
     vol_period: int = 14,
     vol_floor_pct: float = 0.0001,
 ) -> pd.DataFrame:
-    """
-    TradingView-style PnL / Abs DD core with:
+    
+    """ PnL and Absolute Drawdown:
     - Close / Next Open execution
     - long / short / flat regime handling
-    - side-based segment PnL
-    - Abs DD from segment peak
-    - optional volatility-adjusted analytics basis
-    - z-score on Abs DD basis used for classification
-    """
+    - segment PnL
+    - Absolute DD from segment peak
+    - optional volatility normalization
+    - z-score on Abs DD """
+    
     if exec_mode not in {"Close", "Next Open"}:
         raise ValueError("exec_mode must be 'Close' or 'Next Open'")
     if pnl_mode not in {"Raw", "VolAdj"}:
@@ -360,9 +360,9 @@ def render_dashboard(df: pd.DataFrame, cfg: Settings) -> str:
     ax3 = fig.add_subplot(gs[2, 0], sharex=ax1)
     ax4 = fig.add_subplot(gs[3, 0], sharex=ax1)
 
-    # -------------------------
-    # Top panel: BTC + EMAs + cross markers
-    # -------------------------
+    
+    # Top panel: BTC / fast and slow EMAs / cross markers for long and short positions
+    
     ax1.plot(tail["start_time"], tail["close"], linewidth=1.2, label="Close")
     ax1.plot(tail["start_time"], tail["ema_fast"], linewidth=1.3, label=f"EMA {cfg.ema_fast}")
     ax1.plot(tail["start_time"], tail["ema_slow"], linewidth=1.3, label=f"EMA {cfg.ema_slow}")
@@ -395,9 +395,9 @@ def render_dashboard(df: pd.DataFrame, cfg: Settings) -> str:
     ax1.grid(alpha=0.25)
     ax1.legend(loc="upper left")
 
-    # -------------------------
+    
     # PnL panel: segmented by side
-    # -------------------------
+    
     pnl_long = tail["pnl_view"].where(tail["dir"] == 1)
     pnl_short = tail["pnl_view"].where(tail["dir"] == -1)
     pnl_flat = tail["pnl_view"].where(tail["dir"] == 0)
@@ -410,17 +410,17 @@ def render_dashboard(df: pd.DataFrame, cfg: Settings) -> str:
     ax2.grid(alpha=0.25)
     ax2.legend(loc="upper left")
 
-    # -------------------------
+    
     # Abs DD panel
-    # -------------------------
+    
     ax3.plot(tail["start_time"], tail["abs_dd_view"], color="#F33644", linewidth=1.4, label=absdd_label)
     ax3.set_ylabel(absdd_label)
     ax3.grid(alpha=0.25)
     ax3.legend(loc="upper left")
 
-    # -------------------------
+    
     # Z-score panel
-    # -------------------------
+    
     ax4.plot(tail["start_time"], tail["abs_dd_z"], linewidth=1.5, label="Abs DD Z-score")
     ax4.axhline(cfg.z_k1, color="orange", linestyle="--", linewidth=1.0, label=f"K1={cfg.z_k1}")
     ax4.axhline(cfg.z_k2, color="red", linestyle="--", linewidth=1.0, label=f"K2={cfg.z_k2}")
@@ -560,7 +560,7 @@ def main() -> None:
     latest = df.iloc[-1]
     state = load_state(cfg.state_path)
 
-    print("\n=== BTC ABS DD MONITOR ===")
+    print(" BTC ABS DD MONITOR ")
     print(f"symbol      : {cfg.symbol}")
     print(f"category    : {cfg.category}")
     print(f"interval    : {cfg.interval}")
@@ -574,7 +574,6 @@ def main() -> None:
     print(f"abs dd view : {latest['abs_dd_view']:.4f}" if pd.notna(latest["abs_dd_view"]) else "abs dd view : nan")
     print(f"abs dd z    : {latest['abs_dd_z']:.4f}" if pd.notna(latest["abs_dd_z"]) else "abs dd z    : nan")
     print(f"in zone     : {bool(latest['in_zone'])}")
-    print("==========================\n")
 
     triggered = should_send_alert(df, state)
 
