@@ -36,6 +36,7 @@ class Settings:
     telegram_enabled: bool = os.getenv("TELEGRAM_ENABLED", "0") == "1"
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
+    telegram_no_signal_message: bool = os.getenv("TELEGRAM_NO_SIGNAL_MESSAGE", "1") == "1"
 
     # State
     state_path: str = os.getenv("STATE_PATH", "monitor_state.json")
@@ -50,56 +51,61 @@ class Settings:
     vol_period: int = int(os.getenv("VOL_PERIOD", "14"))
     vol_floor_pct: float = float(os.getenv("VOL_FLOOR_PCT", "0.0001"))
 
-BINANCE_KLINE_URL = "https://data-api.binance.vision/api/v3/klines"
+BYBIT_KLINE_URL = "https://api.bybit.com/v5/market/kline"
 
 def interval_to_ms(interval: str) -> int:
     mapping = {
-        "1m": 60_000,
-        "3m": 3 * 60_000,
-        "5m": 5 * 60_000,
-        "15m": 15 * 60_000,
-        "30m": 30 * 60_000,
-        "1h": 60 * 60_000,
-        "2h": 120 * 60_000,
-        "4h": 240 * 60_000,
-        "6h": 360 * 60_000,
-        "12h": 720 * 60_000,
-        "1d": 24 * 60 * 60_000,
-        "1w": 7 * 24 * 60 * 60_000,
-        "1M": 30 * 24 * 60 * 60_000,
+        "1": 60_000,
+        "3": 3 * 60_000,
+        "5": 5 * 60_000,
+        "15": 15 * 60_000,
+        "30": 30 * 60_000,
+        "60": 60 * 60_000,
+        "120": 120 * 60_000,
+        "240": 240 * 60_000,
+        "360": 360 * 60_000,
+        "720": 720 * 60_000,
+        "D": 24 * 60 * 60_000,
+        "W": 7 * 24 * 60 * 60_000,
+        "M": 30 * 24 * 60 * 60_000,
     }
     if interval not in mapping:
         raise ValueError(f"Unsupported interval: {interval}")
     return mapping[interval]
 
 
-def fetch_binance_klines(symbol: str, interval: str, bars: int, timeout: int) -> pd.DataFrame:
+def fetch_bybit_klines(symbol: str, category: str, interval: str, bars: int, timeout: int) -> pd.DataFrame:
     session = requests.Session()
     all_rows = []
-    end_time: Optional[int] = None
+    end: Optional[int] = None
 
     while len(all_rows) < bars:
         limit = min(1000, bars - len(all_rows))
         params = {
+            "category": category,
             "symbol": symbol,
             "interval": interval,
             "limit": limit,
         }
-        if end_time is not None:
-            params["endTime"] = end_time
+        if end is not None:
+            params["end"] = end
 
-        r = session.get(BINANCE_KLINE_URL, params=params, timeout=timeout)
+        r = session.get(BYBIT_KLINE_URL, params=params, timeout=timeout)
         r.raise_for_status()
-        rows = r.json()
+        payload = r.json()
 
+        if payload.get("retCode") != 0:
+            raise RuntimeError(f"Bybit error: {payload}")
+
+        rows = payload["result"]["list"]
         if not rows:
             break
 
-        # Binance returns oldest -> newest, so prepend older batches manually
-        all_rows = rows + all_rows
+        all_rows.extend(rows)
 
-        oldest_open_time = int(rows[0][0])
-        end_time = oldest_open_time - 1
+        # Bybit returns reverse chronological order
+        oldest_start = int(rows[-1][0])
+        end = oldest_start - 1
 
         if len(rows) < limit:
             break
@@ -107,30 +113,25 @@ def fetch_binance_klines(symbol: str, interval: str, bars: int, timeout: int) ->
         time.sleep(0.12)
 
     if not all_rows:
-        raise RuntimeError("No kline data returned from Binance.")
+        raise RuntimeError("No kline data returned from Bybit.")
 
     df = pd.DataFrame(
         all_rows,
         columns=[
-            "open_time",
+            "start_time",
             "open",
             "high",
             "low",
             "close",
             "volume",
-            "close_time",
-            "quote_asset_volume",
-            "num_trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore",
+            "turnover",
         ],
     )
 
-    for col in ["open", "high", "low", "close", "volume"]:
+    for col in ["open", "high", "low", "close", "volume", "turnover"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["start_time"] = pd.to_datetime(pd.to_numeric(df["open_time"]), unit="ms", utc=True)
+    df["start_time"] = pd.to_datetime(pd.to_numeric(df["start_time"]), unit="ms", utc=True)
     df = df.sort_values("start_time").drop_duplicates("start_time").reset_index(drop=True)
 
     candle_ms = interval_to_ms(interval)
@@ -473,15 +474,37 @@ def send_telegram_photo(bot_token: str, chat_id: str, image_path: str, caption: 
         if not r.json().get("ok", False):
             raise RuntimeError(f"Telegram error: {r.json()}")
 
-def build_alert_caption(row: pd.Series, cfg: Settings) -> str:
-    side = "LONG 🟢" if int(row["dir"]) == 1 else "SHORT 🔴" if int(row["dir"]) == -1 else "FLAT ⚪"
+def send_telegram_message(bot_token: str, chat_id: str, text: str, timeout: int) -> None:
+    if not bot_token or not chat_id:
+        raise ValueError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    r = requests.post(
+        url,
+        data={
+            "chat_id": chat_id,
+            "text": text[:4096],
+        },
+        timeout=timeout,
+    )
+    r.raise_for_status()
+
+    payload = r.json()
+    if not payload.get("ok", False):
+        raise RuntimeError(f"Telegram error: {payload}")
+
+def build_status_caption(row: pd.Series, cfg: Settings, triggered: bool) -> str:
     basis_label = "Raw" if cfg.pnl_mode == "Raw" else f"VolAdj ({cfg.vol_metric})"
-    fmt = lambda v: f"{v:.3f}" if pd.notna(v) else "nan"
-    pnl_str, dd_str, z_str = fmt(row["pnl_view"]), fmt(row["abs_dd_view"]), fmt(row["abs_dd_z"])
+    status = "Yes signal" if triggered else "No signal"
+
+    pnl_str = f"{row['pnl_view']:.3f}" if pd.notna(row["pnl_view"]) else "nan"
+    dd_str = f"{row['abs_dd_view']:.3f}" if pd.notna(row["abs_dd_view"]) else "nan"
+    z_str = f"{row['abs_dd_z']:.3f}" if pd.notna(row["abs_dd_z"]) else "nan"
 
     return (
         f"{cfg.symbol} | {cfg.interval}\n"
-        f"{side}\n"
+        f"{status}\n"
+        f"Side: {row['side']}\n"
         f"Basis: {basis_label}\n"
         f"Close: {row['close']:.2f}\n"
         f"PnL: {pnl_str}\n"
@@ -508,8 +531,9 @@ def should_send_alert(df: pd.DataFrame, state: dict) -> bool:
 def main() -> None:
     cfg = Settings()
 
-    df = fetch_binance_klines(
+    df = fetch_bybit_klines(
         symbol=cfg.symbol,
+        category=cfg.category,
         interval=cfg.interval,
         bars=cfg.bars,
         timeout=cfg.request_timeout,
@@ -529,8 +553,9 @@ def main() -> None:
         vol_floor_pct=cfg.vol_floor_pct,
     )
 
-    if len(df) < max(cfg.ema_slow, cfg.z_lookback) + 5:
-        raise RuntimeError("Not enough data after indicator warmup.")
+    min_needed = max(cfg.ema_slow, cfg.z_lookback, cfg.vol_period) + 5
+    if len(df) < min_needed:
+        raise RuntimeError(f"Not enough data after indicator warmup. Need at least {min_needed} closed bars.")
 
     latest = df.iloc[-1]
     state = load_state(cfg.state_path)
@@ -551,13 +576,17 @@ def main() -> None:
     print(f"in zone     : {bool(latest['in_zone'])}")
     print("==========================\n")
 
+    triggered = should_send_alert(df, state)
+
     image_path = cfg.dashboard_path
-    if cfg.save_dashboard or cfg.show_dashboard:
+    need_dashboard = cfg.save_dashboard or cfg.show_dashboard or cfg.telegram_enabled
+
+    if need_dashboard:
         image_path = render_dashboard(df, cfg)
         print(f"Dashboard saved to: {image_path}")
 
-    if cfg.telegram_enabled and should_send_alert(df, state):
-        caption = build_alert_caption(latest, cfg)
+    if cfg.telegram_enabled:
+        caption = build_status_caption(latest, cfg, triggered)
         send_telegram_photo(
             bot_token=cfg.telegram_bot_token,
             chat_id=cfg.telegram_chat_id,
@@ -565,18 +594,17 @@ def main() -> None:
             caption=caption,
             timeout=cfg.request_timeout,
         )
-        print("Telegram alert sent.")
 
-        state["last_alert_bar"] = str(latest["start_time"])
-        state["last_signal"] = int(latest["dir"])
-        state["last_in_zone"] = bool(latest["in_zone"])
-        save_state(cfg.state_path, state)
-    else:
-        state["last_bar"] = str(latest["start_time"])
-        state["last_signal"] = int(latest["dir"])
-        state["last_in_zone"] = bool(latest["in_zone"])
-        save_state(cfg.state_path, state)
-        print("No new alert.")
+        if triggered:
+            print("Telegram image sent with YES SIGNAL caption.")
+            state["last_alert_bar"] = str(latest["start_time"])
+        else:
+            print("Telegram image sent with NO SIGNAL caption.")
+
+    state["last_bar"] = str(latest["start_time"])
+    state["last_signal"] = int(latest["dir"])
+    state["last_in_zone"] = bool(latest["in_zone"])
+    save_state(cfg.state_path, state)
 
     return
 
